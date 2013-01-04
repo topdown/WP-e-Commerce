@@ -11,6 +11,7 @@
 function wpsc_currency_display( $price_in, $args = null ) {
 	global $wpdb;
 	$currency_code = '';
+
 	$args = apply_filters( 'wpsc_toggle_display_currency_code', $args );
 	$query = shortcode_atts( array(
 		'display_currency_symbol' => true,
@@ -30,12 +31,12 @@ function wpsc_currency_display( $price_in, $args = null ) {
 	if('' == get_option('wpsc_decimal_separator'))
 		$decimal_separator = '.';
 	else
-		$decimal_separator = stripslashes( get_option('wpsc_decimal_separator') );
+		$decimal_separator = get_option( 'wpsc_decimal_separator' );
 
 	if('' == get_option('wpsc_thousands_separator'))
 		$thousands_separator = '.';
 	else
-		$thousands_separator = stripslashes( get_option('wpsc_thousands_separator') );
+		$thousands_separator = get_option( 'wpsc_thousands_separator' );
 
 	// Format the price for output
 	$price_out = number_format( (double)$price_in, $decimals, $decimal_separator, $thousands_separator );
@@ -93,6 +94,7 @@ function wpsc_currency_display( $price_in, $args = null ) {
 			$format_string = '%1$s %2$s%3$s';
 			break;
 	}
+
 	// Compile the output
 	$output = trim( sprintf( $format_string, $currency_code, $currency_sign, $price_out ) );
 
@@ -103,7 +105,7 @@ function wpsc_currency_display( $price_in, $args = null ) {
 	}
 
 	// Return results
-	return apply_filters( 'wpsc_currency_display', $output, $query, $format_string, $currency_code, $currency_sign, $price_out );
+	return apply_filters( 'wpsc_currency_display', $output );
 }
 
 /**
@@ -129,9 +131,32 @@ function wpsc_decrement_claimed_stock($purchase_log_id) {
 					$remaining_stock = $current_stock - $claimed_stock->stock_claimed;
 					update_product_meta($product->ID, 'stock', $remaining_stock);
 					$product_meta = get_product_meta($product->ID,'product_metadata',true);
-					if( $remaining_stock < 1 &&  $product_meta["unpublish_when_none_left"] == 1){
-						wp_mail(get_option('purch_log_email'), sprintf(__('%s is out of stock', 'wpsc'), $product->post_title), sprintf(__('Remaining stock of %s is 0. Product was unpublished.', 'wpsc'), $product->post_title) );
-						$wpdb->update( $wpdb->posts, array( 'post_status' => 'draft' ), array( 'ID' => $product->ID ), '%s', '%d' );
+					if( $remaining_stock < 1 ) {
+						// this is to make sure after upgrading to 3.8.9, products will have
+						// "notify_when_none_left" enabled by default if "unpublish_when_none_left"
+						// is enabled.
+						if ( ! isset( $product_meta['notify_when_none_left'] ) ) {
+							$product_meta['unpublish_when_none_left'] = 0;
+							if ( ! empty( $product_meta['unpublish_when_none_left'] ) ) {
+								$product_meta['unpublish_when_none_left'] = 1;
+								update_product_meta( $product->ID, 'product_metadata', $product_meta );
+							}
+						}
+
+						$email_message = sprintf( __( 'The product "%s" is out of stock.', 'wpsc' ), $product->post_title );
+
+						if ( ! empty( $product_meta["unpublish_when_none_left"] ) ) {
+							$result = wp_update_post( array(
+								'ID'          => $product->ID,
+								'post_status' => $draft,
+							) );
+
+							if ( $result )
+								$email_message = __( 'The product "%s" is out of stock and has been unpublished.', 'wpsc' );
+						}
+
+						if ( $product_meta["notify_when_none_left"] == 1 )
+							wp_mail(get_option('purch_log_email'), sprintf(__('%s is out of stock', 'wpsc'), $product->post_title), $email_message );
 					}
 				}
 			case 6:
@@ -243,6 +268,9 @@ function wpsc_convert_weight($in_weight, $in_unit, $out_unit = 'pound', $raw = f
 	return round($weight, 2);
 }
 
+function wpsc_ping_services( $post_id ) {
+	wp_schedule_single_event( time(), 'do_wpsc_pings' );
+}
 
 function wpsc_ping() {
 	$services = get_option('ping_sites');
@@ -280,6 +308,8 @@ function wpsc_sanitise_keys($value) {
   return (int)$value;
 }
 
+add_action( 'publish_wpsc-product', 'wpsc_ping_services' );
+add_action( 'do_wpsc_pings', 'wpsc_ping' );
 
 
 /*
@@ -324,7 +354,7 @@ function wpsc_check_stock($state, $product) {
 	');
 		if( !empty( $no_stock ) ){
 			$state['state'] = true;
-			$state['messages'][] = __('One or more of this products variations are out of stock.', 'wpsc');
+			$state['messages'][] = __( 'One or more of this products variations are out of stock.', 'wpsc' );
 		}
 
 
